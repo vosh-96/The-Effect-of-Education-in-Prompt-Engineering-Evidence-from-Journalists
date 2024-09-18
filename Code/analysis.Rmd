@@ -1,0 +1,2232 @@
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+
+```{r}
+library(ggplot2)
+library(readr)
+library(tidyverse)
+library(reshape2)
+library(sandwich)
+library(lmtest)
+library(MASS)
+library(lme4)
+library(car)
+library(lmerTest)
+library(estimatr)
+library(stargazer)
+library(ggstatsplot)
+library(ordinal)
+library(ggpubr)
+library(coefplot)
+library(dotwhisker)
+library(scales)
+library(nortest)
+library(ggsignif)
+library(patchwork)
+library(igraph)
+library(plotly)
+library(ggpattern)
+library(ggpubr)
+```
+
+```{r}
+fill_missing <- function(master_df, raw_df,question_name, column_name, article_id) {
+  dummy <- raw_df %>% dplyr::select(column_name,PROLIFIC_PID) %>% dplyr::filter(!is.na(!!as.symbol(column_name))) %>% mutate(article = article_id)
+  master_df <-  left_join(master_df, dummy, by = c("PROLIFIC_PID","article"))
+  master_df[[question_name]] <- ifelse(!is.na(master_df[[column_name]]), master_df[[column_name]], master_df[[question_name]])
+  master_df <- dplyr::select(master_df, -column_name)
+ # return(master_df)
+}
+
+get_value <- function(data,journalist_id, article_id, question_name){
+  dummy <- data %>% dplyr::filter(Journalist == journalist_id, Article == article_id) %>% 
+           dplyr::select(question_name)
+  return(dummy[[1]])
+}
+
+
+`%ni%` <- Negate(`%in%`)
+
+
+normalize <- function(x) {
+  (x - min(x)) / (max(x) - min(x))
+}
+
+
+# Function to wrap long labels
+wrap_label <- function(label, width = 20) {
+  str_wrap(label, width = width)
+}
+```
+
+
+
+# Process Journalist Data
+
+```{r}
+# read the raw expert evaluated data
+expert_evaluated_raw_data_name <- "annotated_data_240822.csv"
+expert_evaluated_raw_df <- read_csv(file.path(getwd(),"..", "Data", expert_evaluated_raw_data_name), 
+                   show_col_types = FALSE)
+
+# read the raw layperson evaluated data
+layperson_evaluated_raw_data_name <- "promptEng_journalist_eval_June 5, 2024_16.40.csv"
+layperson_evaluated_raw_df  <- read_csv(file.path(getwd(),"..", "Data", layperson_evaluated_raw_data_name), 
+                   show_col_types = FALSE)
+
+
+question_mapping_data_name <- "Question_name_mapping.csv"
+question_mapping_df  <- read_csv(file.path(getwd(),"..", "Data", question_mapping_data_name), 
+                   show_col_types = FALSE)
+
+
+# add training_status to raw_df 
+# training_status = 0 (1) means repoonse before(after) prompt engineering class
+
+expert_evaluated_raw_df_duplicated <- expert_evaluated_raw_df %>%
+     uncount(weights = 2, .id = "training_status") %>% # Duplicate each row twice
+     mutate(training_status = rep(0:1, length.out = n())) # Add new column with alternating 0 and 1
+
+print(expert_evaluated_raw_df_duplicated)
+```
+
+
+```{r}
+
+# create processed data frame
+
+expert_evaluated_processed_df <- expert_evaluated_raw_df_duplicated %>% mutate(
+  expert_grade_factual = case_when(
+    group == 0 & training_status == 0 ~ Factual_errors_Expert2_pysch1,
+    group == 0 & training_status == 1 ~ Factual_errors_Expert2_gun1,
+    group == 1 & training_status == 0 ~ Factual_errors_Expert2_gun2,
+    group == 1 & training_status == 1 ~ Factual_errors_Expert2_pysch2
+  ),
+  expert_grade_representation = case_when(
+    group == 0 & training_status == 0 ~ representation_Expert2_pysch1,
+    group == 0 & training_status == 1 ~ representation_Expert2_gun1,
+    group == 1 & training_status == 0 ~ representation_Expert2_gun2,
+    group == 1 & training_status == 1 ~ representation_Expert2_pysch2
+  ),
+  expert_grade_depth = case_when(
+    group == 0 & training_status == 0 ~ depth_Expert2_pysch1,
+    group == 0 & training_status == 1 ~ depth_Expert2_gun1,
+    group == 1 & training_status == 0 ~ depth_Expert2_gun2,
+    group == 1 & training_status == 1 ~ depth_Expert2_pysch2
+  ),
+  expert_grade_overall_Expert2 = case_when(
+    group == 0 & training_status == 0 ~ Overall_Expert2_pysch1,
+    group == 0 & training_status == 1 ~ Overall_Expert2_gun1,
+    group == 1 & training_status == 0 ~ Overall_Expert2_gun2,
+    group == 1 & training_status == 1 ~ Overall_Expert2_pysch2
+  ),  
+  expert_grade_overall_Expert1 = case_when(
+    group == 0 & training_status == 0 ~ Overall_Expert1_pysch1,
+    group == 0 & training_status == 1 ~ Overall_Expert1_gun1,
+    group == 1 & training_status == 0 ~ Overall_Expert1_gun2,
+    group == 1 & training_status == 1 ~ Overall_Expert1_pysch2
+  ),
+  perceived_expertise = case_when(
+    group == 0 & training_status == 0 ~ .$"1_expertise_1",
+    group == 1 & training_status == 0 ~ .$"2_expertise_1",
+    TRUE ~ .$"12_expertise_2",
+  ),
+  perceived_helpfulness = case_when(
+    group == 0 & training_status == 0 ~ .$"1_helpfulness_1",
+    group == 1 & training_status == 0 ~ .$"2_helpfulness_1",
+    TRUE ~ .$"12_helpfulness_2",
+  ),
+  task_duration = case_when(
+    group == 0 & training_status == 0 ~ .$"1_duration_a",
+    group == 0 & training_status == 1 ~ .$"1_duration_b",
+    group == 1 & training_status == 0 ~ .$"2_duration_b",
+    group == 1 & training_status == 1 ~ .$"2_duration_a",
+  ),
+  task_text = case_when(
+    group == 0 & training_status == 0 ~ .$"1_writing_a",
+    group == 0 & training_status == 1 ~ .$"1_writing_b",
+    group == 1 & training_status == 0 ~ .$"2_writing_b",
+    group == 1 & training_status == 1 ~ .$"2_writing_a",
+  ),
+  chat_link = case_when(
+    group == 0 & training_status == 0 ~ .$"1_chatlink_a",
+    group == 0 & training_status == 1 ~ .$"1_chatlink_b",
+    group == 1 & training_status == 0 ~ .$"2_chatlink_b",
+    group == 1 & training_status == 1 ~ .$"2_chatlink_a",
+  ),
+  article = case_when(
+    group == 0 & training_status == 0 ~ 0,
+    group == 0 & training_status == 1 ~ 1,
+    group == 1 & training_status == 0 ~ 1,
+    group == 1 & training_status == 1 ~ 0,
+  )
+) %>% dplyr::select(ResponseId, journalist, group, training_status, article, Age,
+                    Gender, Education, Finished, expert_grade_factual, perceived_expertise,
+                    expert_grade_representation,
+                    expert_grade_representation, expert_grade_depth,
+                    expert_grade_overall_Expert2, expert_grade_overall_Expert1,
+                    perceived_helpfulness, task_duration, task_text, chat_link, `Working Experience`)
+
+# transform Gender and education from chr to factor: 
+# Female(0), Male(1), Other(3) and prefer not to say (3)
+# Bachelor (0), Master (1) and Doctorate (2)
+expert_evaluated_processed_df <- expert_evaluated_processed_df %>% mutate(
+  Gender_factor = case_when(
+    Gender == "Female" ~ 0,
+    Gender == "Male" ~ 1,
+    TRUE ~ 3
+  ),
+  Education_factor = case_when(
+    Education == "Bachelor’s or equivalent level" ~ 0,
+    Education == "Master’s or equivalent level" ~ 1,
+    Education == "Doctoral or equivalent level" ~ 2
+  )
+  ) %>% mutate(
+    Gender_factor = as.factor(Gender_factor),
+    #Education_factor = as.factor(Education_factor)
+    training_status = as.factor(training_status)
+    ) %>% mutate(
+      Work_experience_factor = case_when(
+      `Working Experience` == "Less than 1 year" ~ 0,
+      `Working Experience` == "1-3 years" ~ 1,
+      `Working Experience` == "4-6 years" ~ 2,
+      `Working Experience` == "7-10 years" ~ 3,
+      `Working Experience` == "More than 10 years" ~ 4,
+      )
+      
+    ) 
+
+
+print(expert_evaluated_processed_df)
+```
+
+
+```{r}
+expert_evaluated_completed_tasks_df <- expert_evaluated_processed_df %>%
+  filter(!is.na(task_text))
+expert_evaluated_completed_tasks_df <- expert_evaluated_completed_tasks_df %>%
+  group_by(ResponseId) %>% 
+  filter(n() %% 2 == 0)  %>% 
+  ungroup()
+
+
+print(expert_evaluated_completed_tasks_df)
+```
+
+```{r}
+expert_evaluated_completed_tasks_df <- expert_evaluated_completed_tasks_df %>% 
+                                 mutate(centered_expert_grade_overall_Expert1 = .$expert_grade_overall_Expert1 -4)
+
+expert_evaluated_completed_tasks_df <- expert_evaluated_completed_tasks_df %>% group_by(article) %>%
+                                 mutate(scaled_expert_grade_overall_Expert1 = normalize(expert_grade_overall_Expert1),
+                                        scaled_expert_grade_overall_Expert2 = normalize(expert_grade_overall_Expert2),
+                                        scaled_expert_grade_factual = normalize(expert_grade_factual),
+                                        scaled_expert_grade_representation = normalize(expert_grade_representation),
+                                        scaled_expert_grade_depth = normalize(expert_grade_depth),
+                                        ) %>% ungroup()
+
+expert_evaluated_completed_tasks_df
+```
+
+
+```{r}
+
+
+# identified ids who returned to survey provided by prolific dashboard
+returned_prolific_ids <- c('610837760279129ce7c66eb0', '6629a5e048524d4d8e43bd4f',
+                           '655a2d30bcd51e704720645a', '6647aa494c03f7c56f3b1f7b',
+                           '62b9ddea12bb2643ff512fea', '628e24c80b3e2b2e0d7a5af1',
+                           '652e8dc5487e56a9b025bbb3', '5fbd948d22ebef1c398a8e8a',
+                           '6633a093f2650624f55cd23a', '6489fae0691611ad1852bcf6',
+                           '5db2192c48fdc4000e45959f') 
+
+# filter responses that don't have prolific response id
+layperson_evaluated_filter_data <- layperson_evaluated_raw_df[
+                                !is.na(layperson_evaluated_raw_df$PROLIFIC_PID) &
+                                !(layperson_evaluated_raw_df$PROLIFIC_PID %in% 
+                                returned_prolific_ids),
+                                ]
+
+# check if we have repeated prolific_id still in the data
+counts <- table(layperson_evaluated_filter_data$PROLIFIC_PID)
+check_list <- names(counts[counts > 1])
+layperson_evaluated_filter_data <- layperson_evaluated_filter_data[
+                                   !layperson_evaluated_filter_data$PROLIFIC_PID %in% 
+                                   check_list,
+                                   ]
+
+layperson_evaluated_filter_data <- layperson_evaluated_filter_data[
+                                   layperson_evaluated_filter_data$Finished == TRUE, ]
+
+columns_to_drop <- c("StartDate", "EndDate", "Status", "IPAddress", "Progress",
+                     "Duration (in seconds)", "Finished", "RecordedDate", 
+                     "ResponseId", "RecipientLastName", "RecipientFirstName",
+                     "RecipientEmail", "ExternalReference", "LocationLatitude",
+                     "LocationLongitude", "DistributionChannel", "UserLanguage",
+                     "consent", "attention_test")
+
+layperson_evaluated_filter_data <- layperson_evaluated_filter_data %>% 
+                                    subset(select = names(layperson_evaluated_filter_data) %ni% 
+                                           columns_to_drop)
+
+print(layperson_evaluated_filter_data)
+
+```
+```{r}
+layperson_evaluated_processed_data <- layperson_evaluated_filter_data %>% 
+                                      dplyr::select(journalist, attention_failed,
+                                                      PROLIFIC_PID, age, gender)
+layperson_evaluated_processed_data <- layperson_evaluated_processed_data %>%
+     uncount(weights = 2, .id = "article") %>% # Duplicate each row twice
+     mutate(article = rep(0:1, length.out = n())) # Add new column with alternating 0 and 1
+
+
+
+# Add empty columns to the data frame using tidyverse
+layperson_evaluated_processed_data <- layperson_evaluated_processed_data %>%
+  add_column(Readability = NA,
+             Clarity = NA,
+             Informativeness = NA,
+             Perceived_trustworthiness = NA,
+             Language_appropriateness = NA,
+             Depth = NA,
+             Style_appropriateness = NA,
+             Engagement = NA,
+             Intention_seek_info = NA,
+             Intention_reshare = NA)
+
+layperson_evaluated_processed_data
+
+```
+
+
+
+```{r}
+question_name_list <- c("Readability", "Clarity", "Informativeness","Perceived_trustworthiness",
+             "Language_appropriateness", "Depth", "Style_appropriateness", "Engagement",
+             "Intention_seek_info", "Intention_reshare")
+
+
+for(i in unique(question_mapping_df$Journalist)){
+  for(j in unique(question_mapping_df$Article)){
+    for(k in question_name_list){
+      column_name <- get_value(question_mapping_df,i,j,k)
+      layperson_evaluated_processed_data <- fill_missing(layperson_evaluated_processed_data,
+                   layperson_evaluated_filter_data,
+                   k,
+                   column_name,
+                   j)
+    }
+  }
+}
+```
+
+
+```{r}
+layperson_evaluated_processed_data
+```
+
+
+
+```{r}
+layperson_evaluated_processed_data <- merge(
+         layperson_evaluated_processed_data %>% dplyr::select(-c(age,gender)),
+         expert_evaluated_completed_tasks_df %>% dplyr::select(journalist,article,group,training_status), by = c("journalist", "article")
+         )
+
+layperson_evaluated_processed_data <- layperson_evaluated_processed_data %>% mutate (
+    article_training_mutation = case_when(
+    article == 0 & training_status == 0 ~ 0,
+    article == 0 & training_status == 1 ~ 1,
+    article == 1 & training_status == 0 ~ 2,
+    article == 1 & training_status == 1 ~ 3
+  )
+)
+```
+
+
+
+# Data Overview
+
+## Journalist Demographics (Participants who completed the tasks)
+
+```{r}
+# Gender
+summary(expert_evaluated_completed_tasks_df[!is.na(expert_evaluated_completed_tasks_df$Age),]$Age)
+```
+
+
+```{r}
+expert_evaluated_completed_tasks_df$Gender<- fct_explicit_na(expert_evaluated_completed_tasks_df$Gender, na_level = "Not Available")
+
+plt_gender <- ggplot(expert_evaluated_completed_tasks_df[which(expert_evaluated_completed_tasks_df$training_status==0),], aes(x = Gender, fill = Gender)) +
+  geom_bar(alpha = 0.7) +
+  scale_fill_brewer(palette = "Pastel1") +
+  labs(title = "Distribution of Journalists' Gender", x = "Gender", y = "Count") +
+  theme(plot.title = element_text(hjust = 0.5), legend.position="none") 
+
+# Print the plots
+print(plt_gender)
+```
+
+
+```{r}
+expert_evaluated_completed_tasks_df$Education<- fct_explicit_na(expert_evaluated_completed_tasks_df$Education, na_level = "Not Available")
+
+plt_edu <- ggplot(expert_evaluated_completed_tasks_df[which(expert_evaluated_completed_tasks_df$training_status==0),], aes(x = Education, fill = Education)) +
+  geom_bar(alpha = 0.7) +
+  scale_fill_brewer(palette = "Pastel1") +
+  labs(title = "Distribution of Journalists' Education", x = "Education", y = "Count") +
+  theme(plot.title = element_text(hjust = 0.5), legend.position="none") 
+
+print(plt_edu)
+```
+```{r}
+expert_evaluated_completed_tasks_df$`Working Experience`<- fct_explicit_na(expert_evaluated_completed_tasks_df$`Working Experience`, na_level = "Not Available")
+
+plt_workexp <- ggplot(expert_evaluated_completed_tasks_df[which(expert_evaluated_completed_tasks_df$training_status==0),], aes(x = `Working Experience`, fill = `Working Experience`)) +
+  geom_bar(alpha = 0.7) +
+  scale_fill_brewer(palette = "Pastel1") +
+  labs(title = "Distribution of Journalists' Working Experience", x = "Working Experience", y = "Count") +
+  theme(plot.title = element_text(hjust = 0.5), legend.position="none") 
+
+print(plt_workexp)
+```
+
+
+# Perceptions
+
+# Perceived Expertise
+
+```{r}
+# check the normality
+lillie.test(expert_evaluated_completed_tasks_df[which(expert_evaluated_completed_tasks_df$training_status==0),]$perceived_expertise)
+lillie.test(expert_evaluated_completed_tasks_df[which(expert_evaluated_completed_tasks_df$training_status==1),]$perceived_expertise)
+```
+
+```{r}
+
+
+#pdf("perceived_expertise.pdf",width = 6, height = 4)
+
+
+boxplot_perceived_expertise <- ggwithinstats(
+  data = expert_evaluated_completed_tasks_df,
+  x = training_status, 
+  y = perceived_expertise,
+  pairwise.display = "all",
+  centrality.plotting = FALSE,
+  xlab = element_blank(),
+  ylab = "Participants' Perceived Expertise with LLM",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = TRUE,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  ggplot.component = list(aes(fill = training_status))
+)
+
+
+boxplot_perceived_expertise +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Before Training", "After Training")) +
+  theme(
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 12, face = "plain"),
+    axis.title.y = element_text(size = 13),
+    axis.text.x = element_text(size = 13), 
+    axis.text.y = element_text(size = 13), 
+  ) +
+  scale_y_continuous(limits = c(0, 7))
+#dev.off()
+
+```
+
+```{r}
+pdf("perceived_expertise.pdf",width = 4, height = 4)
+ggplot(expert_evaluated_completed_tasks_df, aes(x = training_status, y = perceived_expertise)) +
+  geom_boxplot_pattern(
+    aes(pattern = training_status),
+    pattern_fill = "white",
+    pattern_angle = 45,
+    pattern_density = 0.1,
+    pattern_spacing = 0.025,
+    color = "black",
+    fill = "#8EB69B",
+    width = 0.4
+  ) +
+  scale_pattern_manual(values = c("none", "stripe")) +
+  labs(x = "", y = "Participants' Perceived Expertise with LLM") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  scale_x_discrete(labels=c("Before Training", "After Training")) +
+  theme(
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 12, face = "plain"),
+    axis.title.y = element_text(size = 13),
+    axis.text.x = element_text(size = 13), 
+    axis.text.y = element_text(size = 13), 
+  ) +
+  scale_y_continuous(limits = c(1,7), breaks = seq(1, 7, by = 1))
+dev.off()
+```
+
+
+
+## Perceived Helpfulness
+
+```{r}
+
+
+
+# pdf("percieved_helpfulness.pdf",width = 6, height = 4)
+boxplot_expert_helpfulness <- ggwithinstats(
+  data = expert_evaluated_completed_tasks_df,
+  x = training_status, 
+  y = perceived_helpfulness,
+  pairwise.display = "all",
+  centrality.plotting = FALSE,
+  xlab = element_blank(),
+  ylab = "Participants' Perceived Helpfulness with LLM",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = FALSE,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  ggplot.component = list(aes(fill = training_status))
+)
+
+
+boxplot_expert_helpfulness +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Before Training", "After Training")) +
+  theme(
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 12, face = "plain"),
+    axis.title.y = element_text(size = 13),
+    axis.text.x = element_text(size = 13), 
+    axis.text.y = element_text(size = 13), 
+  ) +
+  scale_y_continuous(limits = c(0, 7))
+#dev.off()
+
+```
+
+
+```{r}
+pdf("perceived_helpfulness.pdf",width = 4, height = 4)
+ggplot(expert_evaluated_completed_tasks_df, aes(x = training_status, y = perceived_helpfulness)) +
+  geom_boxplot_pattern(
+    aes(pattern = training_status),
+    pattern_fill = "white",
+    pattern_angle = 45,
+    pattern_density = 0.1,
+    pattern_spacing = 0.025,
+    color = "black",
+    fill = "#8EB69B",
+    width = 0.4
+  ) +
+  scale_pattern_manual(values = c("none", "stripe")) +
+  labs(x = "", y = "Participants' Perceived Helpfulness with LLM") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  scale_x_discrete(labels=c("Before Training", "After Training")) +
+  theme(
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 12, face = "plain"),
+    axis.title.y = element_text(size = 13),
+    axis.text.x = element_text(size = 13), 
+    axis.text.y = element_text(size = 13), 
+  ) + scale_y_continuous(limits = c(1,7), breaks = seq(1, 7, by = 1))
+
+dev.off()
+```
+
+
+
+# RQ 1
+
+```{r}
+
+perceived_expertise_linear <- lmer(
+  perceived_expertise ~ Education_factor + Gender_factor + Work_experience_factor +
+                        Age + group + training_status + (1 | journalist),
+  data = expert_evaluated_completed_tasks_df
+) 
+
+summary(perceived_expertise_linear)
+
+perceived_helpfulness_linear <- lmer(
+  perceived_helpfulness ~ Education_factor + Gender_factor + Work_experience_factor + 
+                        Age + group + training_status + (1 | journalist),
+  data = expert_evaluated_completed_tasks_df
+) 
+
+summary(perceived_helpfulness_linear)
+
+```
+
+# RQ 2
+
+
+```{r}
+
+expert_grade_overall_linear <- lmer(
+  scaled_expert_grade_overall_Expert2 ~  Education_factor + Gender_factor + Work_experience_factor +
+                        Age  + training_status+ (1|article),
+  data = expert_evaluated_completed_tasks_df %>% dplyr::filter(Gender_factor != 4 )
+) 
+
+summary(expert_grade_overall_linear)
+#vif(expert_grade_linear)
+
+expert_grade_factual_linear <- lmer(
+  expert_grade_factual ~  Education_factor + Gender_factor + Work_experience_factor +
+                        Age  + training_status+ (1|article),
+  data = expert_evaluated_completed_tasks_df %>% dplyr::filter(Gender_factor != 4 )
+) 
+
+summary(expert_grade_factual_linear)
+
+expert_grade_representation_linear <- lmer(
+  expert_grade_representation ~  Education_factor + Gender_factor + Work_experience_factor +
+                        Age  + training_status+ (1|article),
+  data = expert_evaluated_completed_tasks_df %>% dplyr::filter(Gender_factor != 4 )
+) 
+
+summary(expert_grade_representation_linear)
+
+
+expert_grade_depth_linear <- lmer(
+  expert_grade_depth ~  Education_factor + Gender_factor + Work_experience_factor +
+                        Age  + training_status+ (1|article),
+  data = expert_evaluated_completed_tasks_df %>% dplyr::filter(Gender_factor != 4 )
+) 
+
+
+summary(expert_grade_depth_linear)
+vif(expert_grade_depth_linear)
+
+```
+
+```{r}
+ggbetweenstats(
+  data = expert_evaluated_completed_tasks_df,
+  x = group,
+  y = expert_grade_overall_Expert2,
+  pairwise.display = "all",
+  centrality.path = FALSE,
+  xlab = element_blank(),
+ # ylab = "Participants' Perceived Expertise with LLM",
+  #centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = TRUE,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  ggplot.component = list(aes(fill = group))
+)
+
+ggbetweenstats(
+  data = expert_evaluated_completed_tasks_df,
+  x = group,
+  y = expert_grade_factual,
+  pairwise.display = "all",
+  centrality.path = FALSE,
+  xlab = element_blank(),
+ # ylab = "Participants' Perceived Expertise with LLM",
+  #centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = TRUE,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  ggplot.component = list(aes(fill = group))
+)
+
+ggbetweenstats(
+  data = expert_evaluated_completed_tasks_df,
+  x = group,
+  y = expert_grade_representation,
+  pairwise.display = "all",
+  centrality.path = FALSE,
+  xlab = element_blank(),
+ # ylab = "Participants' Perceived Expertise with LLM",
+  #centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = TRUE,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  ggplot.component = list(aes(fill = group))
+)
+
+ggbetweenstats(
+  data = expert_evaluated_completed_tasks_df,
+  x = group,
+  y = expert_grade_depth,
+  pairwise.display = "all",
+  centrality.path = FALSE,
+  xlab = element_blank(),
+ # ylab = "Participants' Perceived Expertise with LLM",
+  #centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = TRUE,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  ggplot.component = list(aes(fill = group))
+)
+
+```
+
+
+
+```{r}
+
+
+expert_grade_ordinal <- clmm(
+  scaled_expert_grade_overall_Expert2_fac ~  group + training_status + (1|journalist),
+  data = expert_evaluated_completed_tasks_df %>% mutate(scaled_expert_grade_overall_Expert2_fac = as.factor(scaled_expert_grade_overall_Expert2))
+)
+summary(expert_grade_ordinal)
+
+```
+
+
+```{r}
+
+article_training_mutation_order <- c("Article Psy, Before training", 
+                                     "Article Psy, After training", 
+                                     "Article GunViolence, Before training", 
+                                     "Article GunViolence, After training")
+
+expert_evaluated_completed_tasks_df <- expert_evaluated_completed_tasks_df %>% mutate (
+    article_training_mutation = case_when(
+    article == 0 & training_status == 0 ~ "Article Psy, Before training",
+    article == 0 & training_status == 1 ~ "Article Psy, After training",
+    article == 1 & training_status == 0 ~ "Article GunViolence, Before training",
+    article == 1 & training_status == 1 ~ "Article GunViolence, After training"
+  ) 
+)
+expert_evaluated_completed_tasks_df <- expert_evaluated_completed_tasks_df %>% mutate(article_training_mutation = factor(article_training_mutation, levels = article_training_mutation_order))
+
+custom_colors <- c("Article Psy, Before training" = "#E69F00", 
+                   "Article Psy, After training" = "#56B4E9", 
+                   "Article GunViolence, Before training" = "#E69F00", 
+                   "Article GunViolence, After training" = "#56B4E9")
+
+# Custom patterns
+custom_patterns <- c("Article Psy, Before training" = "none", 
+                     "Article Psy, After training" = "none", 
+                     "Article GunViolence, Before training" = "stripe", 
+                     "Article GunViolence, After training" = "stripe")
+
+boxplot_expert_score_factual_error <- ggbetweenstats(
+  data = expert_evaluated_completed_tasks_df,
+  x = article_training_mutation,
+  y = expert_grade_factual,
+  pairwise.display = "all",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Factual errors in posts",
+  centrality.plotting = FALSE,
+  point.path = FALSE,
+  results.subtitle = TRUE,
+  type = "robust",
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE)
+)
+
+boxplot_expert_score_factual_error
+# Add patterned boxplots
+plot_object_with_patterns <- boxplot_expert_score_factual_error +
+  geom_boxplot_pattern(
+    pattern = c("stripe", "stripe", "none", "none"),
+    pattern_color = "black",
+    pattern_angle = c(45, 45, 45, 45),
+    pattern_density = 0.1,
+    pattern_spacing = 0.025,
+    pattern_key_scale_factor = 0.6,
+    color = "black",  # outline color
+    fill = c("#FF9800", "#1976D2","#FF9800", "#1976D2"),   # background fill color
+    outlier.shape = NA,
+    inherit.aes = TRUE,
+    width = 0.5
+  ) 
+
+plot_object_with_patterns
+
+
+```
+
+```{r}
+
+boxplot_expert_score_depth <- ggbetweenstats(
+  data = expert_evaluated_completed_tasks_df,
+  x = article_training_mutation,
+  y = expert_grade_depth,
+  pairwise.display = "s",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Depth points in posts",
+  centrality.plotting = FALSE,
+  #centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = TRUE,
+  type = "robust",
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+boxplot_expert_score_depth  +
+  geom_boxplot_pattern(
+    pattern = c("stripe", "stripe", "none", "none"),
+    pattern_color = "black",
+    pattern_angle = c(45, 45, 45, 45),
+    pattern_density = 0.1,
+    pattern_spacing = 0.025,
+    pattern_key_scale_factor = 0.6,
+    color = "black",  # outline color
+    fill = c("#FF9800", "#1976D2","#FF9800", "#1976D2"),   # background fill color
+    outlier.shape = NA,
+    inherit.aes = TRUE,
+    width = 0.5
+  ) +
+  scale_pattern_manual(values = c("stripe", "stripe", "none", "none"))
+#dev.off()
+```
+```{r}
+boxplot_expert_score_misrep <-  ggbetweenstats(
+  data = expert_evaluated_completed_tasks_df,
+  x = article_training_mutation,
+  y = expert_grade_representation,
+   pairwise.display = "all",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "representation errors in posts",
+  centrality.plotting = FALSE,
+  point.path = FALSE,
+  results.subtitle = TRUE,
+#  type = "robust",
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+)
+boxplot_expert_score_misrep + scale_y_continuous(limits = c(0, 4))
+```
+
+```{r}
+boxplot_expert_score_overall_Expert2 <- ggbetweenstats(
+  data = expert_evaluated_completed_tasks_df,
+  x = article_training_mutation,
+  y = expert_grade_overall_Expert2,
+  pairwise.display = "all",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Overall Expert scores",
+  centrality.plotting = FALSE,
+  #centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = TRUE,
+  type = "robust",
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+boxplot_expert_score_overall_Expert2 +
+  geom_boxplot_pattern(
+    pattern = c("stripe", "stripe", "none", "none"),
+    pattern_color = "black",
+    pattern_angle = c(45, 45, 45, 45),
+    pattern_density = 0.1,
+    pattern_spacing = 0.025,
+    pattern_key_scale_factor = 0.6,
+    color = "black",  # outline color
+    fill = c("#FF9800", "#1976D2","#FF9800", "#1976D2"),   # background fill color
+    outlier.shape = NA,
+    inherit.aes = TRUE,
+    width = 0.5
+  ) +
+  scale_pattern_manual(values = c("stripe", "stripe", "none", "none"))
+```
+
+```{r}
+metrics_expert_list <- c("expert_grade_factual", "expert_grade_representation", "expert_grade_reward")
+metrics_expert_list <- c("expert_grade_factual", "expert_grade_representation", "expert_grade_depth")
+
+
+metrics_stat_expert_list <- list()
+
+for (metric in metrics_expert_list) {
+  result <- expert_evaluated_completed_tasks_df %>% 
+    group_by(article_training_mutation) %>% 
+    summarise(
+      mean_val = mean(!!sym(metric), na.rm = TRUE),
+      sd.value = sd(!!sym(metric), na.rm = TRUE),
+      n.value = n()
+    ) %>%
+    mutate(
+      se.value = sd.value / sqrt(n.value),
+      lower_ci = mean_val - qt(1 - (0.05 / 2), n.value - 1) * se.value,
+      upper_ci = mean_val + qt(1 - (0.05 / 2), n.value - 1) * se.value,
+      lower_se = mean_val - se.value,
+      upper_se = mean_val + se.value,
+      metrics = metric,
+    ) %>%
+    select(article_training_mutation, metrics, mean_val, lower_ci, upper_ci, lower_se, upper_se)
+  
+  metrics_stat_expert_list[[metric]] <- result
+}
+
+final_metrics_stat_expert_list <- bind_rows(metrics_stat_expert_list)
+
+
+final_metrics_stat_expert_list
+
+```
+
+```{r}
+pdf("RQ3_layperson.pdf",width = 6, height = 6)
+# Custom color palette
+custom_colors <- c("Article Psy, Before training" = "#E69F00", 
+                   "Article Psy, After training" = "#E69F00", 
+                   "Article GunViolence, Before training" = "#56B4E9", 
+                   "Article GunViolence, After training" = "#56B4E9")
+
+custom_patterns <- c("Article Psy, Before training" = "none", 
+                     "Article Psy, After training" = "stripe", 
+                     "Article GunViolence, Before training" = "none", 
+                     "Article GunViolence, After training" = "stripe")
+
+final_metrics_stat_expert_list$metrics <- factor(final_metrics_stat_expert_list$metrics, 
+                                                 levels = c("expert_grade_factual", 
+                                                            "expert_grade_representation", 
+                                                            "expert_grade_depth"))
+new_labels_x_axis <- c(
+  "expert_grade_factual" = "Factual errors",
+  "expert_grade_representation" = "Representation errors",
+  "expert_grade_depth" = "Depth"
+)
+#pdf("expert_score_detailed.pdf",width = 10, height = 4)
+ggplot(final_metrics_stat_expert_list , 
+       aes(x = metrics, y = mean_val, 
+           fill = article_training_mutation, 
+           pattern = article_training_mutation,
+           group = article_training_mutation)) +
+  geom_bar_pattern(position = position_dodge(width = 0.8), 
+                   stat = "identity", 
+                   color = "black", pattern_fill = "black", 
+                   pattern_angle = 45, pattern_density = 0.1, 
+                   pattern_spacing = 0.025, pattern_key_scale_factor = 0.6,
+                   width = 0.7) +
+  geom_errorbar(aes(ymin = lower_se, ymax = upper_se),
+                position = position_dodge(width = 0.8), width = 0.25) +
+  stat_summary(fun = mean, geom = "point", shape = 18, size = 3, 
+               position = position_dodge(width = 0.8)) +
+  labs(x = "", y = "Frequency") +
+  scale_fill_manual(values = custom_colors) +
+  scale_pattern_manual(values = custom_patterns) + 
+  scale_x_discrete(labels = new_labels_x_axis) +
+  theme_pubr() +
+  theme(
+    legend.title = element_blank(),
+    axis.text.x = element_text(angle = 0, hjust = 0.5, vjust = 0.5),
+    axis.text.x.bottom = element_text(margin = margin(t = 10)),
+    legend.position = "bottom"
+  ) +
+  coord_cartesian(clip = "off") +
+  guides(fill = guide_legend(override.aes = list(shape = NA)))
+dev.off()
+```
+```{r}
+result <- expert_evaluated_completed_tasks_df %>% 
+    group_by(article_training_mutation) %>% 
+    summarise(
+      mean_val = mean(expert_grade_overall_Expert2, na.rm = TRUE),
+      sd.value = sd(expert_grade_overall_Expert2, na.rm = TRUE),
+      n.value = n()
+    ) %>%
+    mutate(
+      se.value = sd.value / sqrt(n.value),
+      lower_ci = mean_val - qt(1 - (0.05 / 2), n.value - 1) * se.value,
+      upper_ci = mean_val + qt(1 - (0.05 / 2), n.value - 1) * se.value,
+      lower_se = mean_val - se.value,
+      upper_se = mean_val + se.value,
+      metrics = "expert_grade_overall_Expert2",
+    ) %>%
+    select(article_training_mutation, metrics, mean_val, lower_ci, upper_ci, lower_se, upper_se)
+result
+
+```
+```{r}
+pdf("expert_score_overall.pdf",width = 10, height = 4)
+ggplot(result , 
+       aes(x = metrics, y = mean_val, 
+           fill = article_training_mutation, 
+           pattern = article_training_mutation,
+           group = article_training_mutation)) +
+  geom_bar_pattern(position = position_dodge(width = 0.8), 
+                   stat = "identity", 
+                   color = "black", pattern_fill = "black", 
+                   pattern_angle = 45, pattern_density = 0.1, 
+                   pattern_spacing = 0.025, pattern_key_scale_factor = 0.6,
+                   width = 0.7) +
+  geom_errorbar(aes(ymin = lower_se, ymax = upper_se),
+                position = position_dodge(width = 0.8), width = 0.25) +
+  stat_summary(fun = mean, geom = "point", shape = 18, size = 3, 
+               position = position_dodge(width = 0.8)) +
+  labs(x = "", y = "Domain expert score") +
+  scale_fill_manual(values = custom_colors) +
+  scale_pattern_manual(values = custom_patterns) + 
+  scale_x_discrete(labels = "Overall score") +
+  theme_pubr() +
+  theme(
+    legend.title = element_blank(),
+    axis.text.x = element_text(angle = 0, hjust = 0.5, vjust = 0.5),
+    axis.text.x.bottom = element_text(margin = margin(t = 10)),
+    legend.position = "bottom"
+  ) +
+  coord_cartesian(clip = "off")
+dev.off()
+```
+
+# RQ 3
+
+```{r}
+Readability_linear <- lmer(
+  Readability ~ training_status + (1 | journalist) + (1 | article),
+  data = layperson_evaluated_processed_data
+  )
+
+ summary(Readability_linear)
+ 
+
+ 
+```
+
+
+```{r}
+Readability_linear <- lmer(
+  Readability ~ training_status + (1 | journalist) + (1 | article),
+  data = layperson_evaluated_processed_data
+  )
+
+ summary(Readability_linear)
+
+Clarity_linear <- lmer(
+  Clarity ~ training_status + (1 | journalist)+ (1 | article),
+  data = layperson_evaluated_processed_data
+  )
+
+ summary(Clarity_linear)
+ 
+Perceived_trustworthiness_linear <- lmer(
+  Perceived_trustworthiness ~ training_status + (1 | journalist)+ (1 | article),
+  data = layperson_evaluated_processed_data
+  )
+
+ summary(Perceived_trustworthiness_linear)
+ 
+Informativeness_linear <- lmer(
+  Informativeness ~ training_status + (1 | journalist)+ (1 | article),
+  data = layperson_evaluated_processed_data
+  )
+
+ summary(Informativeness_linear)
+
+Language_appropriateness_linear <- lmer(
+  Language_appropriateness ~ training_status  + (1 | journalist)+ (1 | article),
+  data = layperson_evaluated_processed_data
+  )
+
+ summary(Language_appropriateness_linear)
+
+Depth_linear <- lmer(
+  Depth ~ training_status + (1 | journalist)+ (1 | article),
+  data = layperson_evaluated_processed_data
+  )
+
+ summary(Depth_linear)
+ 
+ 
+ Style_appropriateness_linear <- lmer(
+   Style_appropriateness ~ training_status + (1 | journalist)+ (1 | article),
+  data = layperson_evaluated_processed_data
+  )
+
+ summary(Style_appropriateness_linear)
+ 
+Engagement_linear <- lmer(
+   Engagement ~ training_status + (1 | journalist)+ (1 | article),
+  data = layperson_evaluated_processed_data
+  )
+
+ summary(Engagement_linear) 
+ 
+ Intention_seek_info_linear <- lmer(
+    Intention_seek_info ~ training_status + (1 | journalist)+ (1 | article),
+  data = layperson_evaluated_processed_data
+  )
+
+ summary(Intention_seek_info_linear) 
+ 
+Intention_reshare_linear <- lmer(
+    Intention_reshare ~ training_status + (1 | journalist)+ (1 | article),
+  data = layperson_evaluated_processed_data
+  )
+
+ summary(Intention_reshare_linear) 
+
+```
+
+```{r}
+# check the normality of layperson variables 
+lillie.test(layperson_evaluated_processed_data$Readability)
+lillie.test(layperson_evaluated_processed_data$Depth)
+lillie.test(layperson_evaluated_processed_data$Clarity)
+lillie.test(layperson_evaluated_processed_data$Informativeness)
+lillie.test(layperson_evaluated_processed_data$Style_appropriateness)
+lillie.test(layperson_evaluated_processed_data$Language_appropriateness)
+lillie.test(layperson_evaluated_processed_data$Engagement)
+lillie.test(layperson_evaluated_processed_data$Perceived_trustworthiness)
+lillie.test(layperson_evaluated_processed_data$Intention_seek_info)
+lillie.test(layperson_evaluated_processed_data$Intention_reshare)
+
+```
+
+```{r}
+result_subtitle <- TRUE
+readability_layperson_art0 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 0),
+  x = training_status,
+  y = Readability,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Readability score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+readability_layperson_art0 <- readability_layperson_art0 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 1 Before Training", "Article 1 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+
+readability_layperson_art0
+
+readability_layperson_art1 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 1),
+  x = training_status,
+  y = Readability,
+  pairwise.display = "all",
+  centrality.path = FALSE,
+  type = "robust",
+  xlab = "",
+  ylab = "Readability score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+readability_layperson_art1 <- readability_layperson_art1 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 2 Before Training", "Article 2 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+readability_layperson_art1
+
+# Clarity
+
+
+Clarity_layperson_art0 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 0),
+  x = training_status,
+  y = Clarity,
+  pairwise.display = "all",
+  centrality.path = FALSE,
+  type = "robust",
+  xlab = "",
+  ylab = "Clarity score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Clarity_layperson_art0 <- readability_layperson_art0 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 1 Before Training", "Article 1 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+Clarity_layperson_art0
+
+
+Clarity_layperson_art1 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 1),
+  x = training_status,
+  y = Clarity,
+  pairwise.display = "all",
+  centrality.path = FALSE,
+  type = "robust",
+  xlab = "",
+  ylab = "Clarity score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Clarity_layperson_art1 <- readability_layperson_art1 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 2 Before Training", "Article 2 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+Clarity_layperson_art1
+
+# Informativeness
+
+Informativeness_layperson_art0 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 0),
+  x = training_status,
+  y = Informativeness,
+  pairwise.display = "all",
+  centrality.path = FALSE,
+  type = "robust",
+  xlab = "",
+  ylab = "Informativeness score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Informativeness_layperson_art0 <- Informativeness_layperson_art0 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 1 Before Training", "Article 1 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+Informativeness_layperson_art0
+
+Informativeness_layperson_art1 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 1),
+  x = training_status,
+  y = Informativeness,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Informativeness score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Informativeness_layperson_art1 <- Informativeness_layperson_art1 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 2 Before Training", "Article 2 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+Informativeness_layperson_art1
+
+# Perceived_trustworthiness
+
+
+Perceived_trustworthiness_layperson_art0 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 0),
+  x = training_status,
+  y = Perceived_trustworthiness,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Perceived trustworthiness score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Perceived_trustworthiness_layperson_art0 <- Perceived_trustworthiness_layperson_art0 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 1 Before Training", "Article 1 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+Perceived_trustworthiness_layperson_art0
+
+Perceived_trustworthiness_layperson_art1 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 1),
+  x = training_status,
+  y = Perceived_trustworthiness,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Perceived trustworthiness score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Perceived_trustworthiness_layperson_art1 <- Perceived_trustworthiness_layperson_art1 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 2 Before Training", "Article 2 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+Perceived_trustworthiness_layperson_art1
+
+# Language_appropriateness
+
+Language_appropriateness_layperson_art0 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 0),
+  x = training_status,
+  y = Language_appropriateness,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Language_appropriateness score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Language_appropriateness_layperson_art0 <- Language_appropriateness_layperson_art0 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 1 Before Training", "Article 1 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+
+Language_appropriateness_layperson_art0
+
+Language_appropriateness_layperson_art1 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 1),
+  x = training_status,
+  y = Readability,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Language_appropriateness score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Language_appropriateness_layperson_art1 <- Language_appropriateness_layperson_art1 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 2 Before Training", "Article 2 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+Language_appropriateness_layperson_art1
+
+# Depth
+
+Depth_layperson_art0 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 0),
+  x = training_status,
+  y = Depth,
+  pairwise.display = "all",
+  centrality.path = FALSE,
+  type = "robust",
+  xlab = "",
+  ylab = "Depth score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Depth_layperson_art0 <- Depth_layperson_art0 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 1 Before Training", "Article 1 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+
+Depth_layperson_art0
+
+Depth_layperson_art1 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 1),
+  x = training_status,
+  y = Depth,
+  pairwise.display = "all",
+  centrality.path = FALSE,
+  type = "robust",
+  xlab = "",
+  ylab = "Depth score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Depth_layperson_art1 <- Depth_layperson_art1 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 2 Before Training", "Article 2 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+Depth_layperson_art1
+
+# Style_appropriateness
+
+Style_appropriateness_layperson_art0 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 0),
+  x = training_status,
+  y = Style_appropriateness,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Style appropriateness score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Style_appropriateness_layperson_art0 <- Style_appropriateness_layperson_art0 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 1 Before Training", "Article 1 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+
+Style_appropriateness_layperson_art0
+
+Style_appropriateness_layperson_art1 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 1),
+  x = training_status,
+  y = Style_appropriateness,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Style appropriateness score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Style_appropriateness_layperson_art1 <- Style_appropriateness_layperson_art1 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 2 Before Training", "Article 2 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+Style_appropriateness_layperson_art1
+
+# Engagement
+
+Engagement_layperson_art0 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 0),
+  x = training_status,
+  y = Engagement,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Engagement score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Engagement_layperson_art0 <- Engagement_layperson_art0 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 1 Before Training", "Article 1 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+
+Engagement_layperson_art0
+
+Engagement_layperson_art1 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 1),
+  x = training_status,
+  y = Engagement,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Engagement score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Engagement_layperson_art1 <- Engagement_layperson_art1 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 2 Before Training", "Article 2 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+Engagement_layperson_art1
+
+# intention to seek information
+
+Intention_seek_info_layperson_art0 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 0),
+  x = training_status,
+  y = Intention_seek_info,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Intention to seek information score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Intention_seek_info_layperson_art0 <- Intention_seek_info_layperson_art0 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 1 Before Training", "Article 1 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+
+Intention_seek_info_layperson_art0
+
+Intention_seek_info_layperson_art1 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 1),
+  x = training_status,
+  y = Intention_seek_info,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Intention to seek information score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+
+Intention_seek_info_layperson_art1 <- Intention_seek_info_layperson_art1 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 2 Before Training", "Article 2 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+Intention_seek_info_layperson_art1
+
+
+Intention_reshare_layperson_art0 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 0),
+  x = training_status,
+  y = Intention_reshare,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Intention to reshare information score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+# intention to reshare information
+
+Intention_reshare_layperson_art0 <- Intention_reshare_layperson_art0 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 1 Before Training", "Article 1 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+
+Intention_reshare_layperson_art0
+
+Intention_reshare_layperson_art1 <- ggwithinstats(
+  data = layperson_evaluated_processed_data %>% dplyr::filter(article == 1),
+  x = training_status,
+  y = Intention_reshare,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Intention to reshare information score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Intention_reshare_layperson_art1 <- Intention_reshare_layperson_art1 +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Article 2 Before Training", "Article 2 After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+Intention_reshare_layperson_art1
+```
+
+
+```{r}
+result_subtitle <- TRUE
+readability_layperson_tot <- ggwithinstats(
+  data = layperson_evaluated_processed_data ,
+  x = training_status,
+  y = Readability,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Readability score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+readability_layperson_tot <- readability_layperson_tot +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Before Training", "After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+
+readability_layperson_tot
+
+
+# Clarity
+
+
+Clarity_layperson_tot <- ggwithinstats(
+  data = layperson_evaluated_processed_data,
+  x = training_status,
+  y = Clarity,
+  pairwise.display = "all",
+  centrality.path = FALSE,
+  type = "robust",
+  xlab = "",
+  ylab = "Clarity score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Clarity_layperson_tot <- readability_layperson_tot +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Before Training", "After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+Clarity_layperson_tot
+
+
+
+# Informativeness
+
+Informativeness_layperson_tot <- ggwithinstats(
+  data = layperson_evaluated_processed_data,
+  x = training_status,
+  y = Informativeness,
+  pairwise.display = "all",
+  centrality.path = FALSE,
+  type = "robust",
+  xlab = "",
+  ylab = "Informativeness score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Informativeness_layperson_tot <- Informativeness_layperson_tot +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Before Training", "After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+Informativeness_layperson_tot
+
+
+
+# Perceived_trustworthiness
+
+
+Perceived_trustworthiness_layperson_tot <- ggwithinstats(
+  data = layperson_evaluated_processed_data,
+  x = training_status,
+  y = Perceived_trustworthiness,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Perceived trustworthiness score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Perceived_trustworthiness_layperson_tot <- Perceived_trustworthiness_layperson_tot +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Before Training", "After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+Perceived_trustworthiness_layperson_tot
+
+
+# Language_appropriateness
+
+Language_appropriateness_layperson_tot <- ggwithinstats(
+  data = layperson_evaluated_processed_data,
+  x = training_status,
+  y = Language_appropriateness,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Language_appropriateness score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Language_appropriateness_layperson_tot <- Language_appropriateness_layperson_tot +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Training", "Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+
+Language_appropriateness_layperson_tot
+
+
+# Depth
+
+Depth_layperson_tot <- ggwithinstats(
+  data = layperson_evaluated_processed_data,
+  x = training_status,
+  y = Depth,
+  pairwise.display = "all",
+  centrality.path = FALSE,
+  type = "robust",
+  xlab = "",
+  ylab = "Depth score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Depth_layperson_tot <- Depth_layperson_tot +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Training", "Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+
+Depth_layperson_tot
+
+
+
+# Style_appropriateness
+
+Style_appropriateness_layperson_tot <- ggwithinstats(
+  data = layperson_evaluated_processed_data ,
+  x = training_status,
+  y = Style_appropriateness,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Style appropriateness score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Style_appropriateness_layperson_tot <- Style_appropriateness_layperson_tot +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Before Training", "After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+
+Style_appropriateness_layperson_tot
+
+
+
+# Engagement
+
+Engagement_layperson_tot <- ggwithinstats(
+  data = layperson_evaluated_processed_data,
+  x = training_status,
+  y = Engagement,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Engagement score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Engagement_layperson_tot <- Engagement_layperson_tot +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Before Training", "After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+
+Engagement_layperson_tot
+
+
+# intention to seek information
+
+Intention_seek_info_layperson_tot <- ggwithinstats(
+  data = layperson_evaluated_processed_data,
+  x = training_status,
+  y = Intention_seek_info,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Intention to seek information score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+
+Intention_seek_info_layperson_tot <- Intention_seek_info_layperson_tot +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Before Training", "After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+
+Intention_seek_info_layperson_tot
+
+# Intention to reshare 
+Intention_reshare_layperson_tot <- ggwithinstats(
+  data = layperson_evaluated_processed_data,
+  x = training_status,
+  y = Intention_reshare,
+  pairwise.display = "all",
+  type = "robust",
+  centrality.path = FALSE,
+  xlab = "",
+  ylab = "Intention to reshare information score",
+  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
+  point.path = FALSE,
+  results.subtitle = result_subtitle,
+  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
+  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
+  #ggplot.component = list(aes(fill = training_status))
+)
+
+# intention to reshare information
+
+Intention_reshare_layperson_tot <- Intention_reshare_layperson_tot +
+  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
+  scale_x_discrete(labels=c("Before Training", "After Training")) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10, face = "plain")
+  )
+
+Intention_reshare_layperson_tot
+```
+
+
+
+```{r}
+# Assuming layperson_evaluated_processed_data is your input dataframe
+
+metrics_list <- c("Readability", "Clarity", "Informativeness", "Engagement", 
+             "Style_appropriateness", "Language_appropriateness", "Depth",
+             "Perceived_trustworthiness", "Intention_reshare", "Intention_seek_info")
+
+metrics_stat_list <- list()
+
+for (metric in metrics_list) {
+  result <- layperson_evaluated_processed_data %>% 
+    group_by(article_training_mutation) %>% 
+    summarise(
+      mean_val = mean(!!sym(metric), na.rm = TRUE),
+      sd.value = sd(!!sym(metric), na.rm = TRUE),
+      n.value = n()
+    ) %>%
+    mutate(
+      se.value = sd.value / sqrt(n.value),
+      lower_ci = mean_val - qt(1 - (0.05 / 2), n.value - 1) * se.value,
+      upper_ci = mean_val + qt(1 - (0.05 / 2), n.value - 1) * se.value,
+      lower_se = mean_val - se.value,
+      upper_se = mean_val + se.value,
+      metrics = metric,
+    ) %>%
+    select(article_training_mutation, metrics, mean_val, lower_ci, upper_ci, lower_se, upper_se)
+  
+  metrics_stat_list[[metric]] <- result
+}
+
+final_metrics_stat_list <- bind_rows(metrics_stat_list)
+
+final_metrics_stat_list <- final_metrics_stat_list %>%
+  mutate(article_training_mutation = case_when(
+    article_training_mutation == 0 ~ "Article Psy, Before training",
+    article_training_mutation == 1 ~ "Article Psy, After training",
+    article_training_mutation == 2 ~ "Article GunViolence, Before training",
+    article_training_mutation == 3 ~ "Article GunViolence, After training",
+    TRUE ~ as.character(article_training_mutation)  # This handles any unexpected values
+  )) %>% mutate(article_training_mutation = factor(article_training_mutation ,
+                                                   levels = article_training_mutation_order))
+final_metrics_stat_list
+
+```
+
+
+
+
+
+
+```{r}
+
+pdf("RQ3_layperson.pdf",width = 18, height = 10)
+
+      
+new_labels_layperson_y_axis <- c(
+  "Readability" = "Readability",
+  "Clarity" = "Clarity",
+  "Informativeness" = "Informativeness",
+  "Engagement" = "Engagement",
+  "Style_appropriateness" = "Appropriateness for the target audience",
+  "Language_appropriateness" = "Appropriateness for the mode of communication",
+  "Depth" = "Depth",
+  "Perceived_trustworthiness" = "Perceived trustworthiness",
+  "Intention_reshare" = "Intention to re-share",
+  "Intention_seek_info" = "Intentino to seek further information"
+)
+
+metric_order <- c(
+  "Readability",
+  "Clarity",
+  "Informativeness",
+  "Perceived_trustworthiness",
+  "Style_appropriateness",
+  "Depth",
+  "Language_appropriateness",
+  "Engagement",
+  "Intention_reshare",
+  "Intention_seek_info"
+)
+
+final_metrics_stat_list$metrics <- factor(final_metrics_stat_list$metrics, levels = metric_order)
+
+# Apply wrapping to y-axis labels
+new_labels_layperson_y_axis <- sapply(new_labels_layperson_y_axis, wrap_label)
+
+ggplot(final_metrics_stat_list, aes(y = metrics, x = mean_val, fill = article_training_mutation, pattern = article_training_mutation)) +
+  geom_bar_pattern(position = position_dodge(width = 0.9), stat = "identity", color = "black",
+                   pattern_fill = "black", pattern_angle = 45, pattern_density = 0.1,
+                   pattern_spacing = 0.025, pattern_key_scale_factor = 0.6, width = 0.8) +
+  geom_errorbar(aes(group = article_training_mutation, xmax = upper_se, xmin = lower_se),
+                position = position_dodge(width = 0.9), width = 0.4) +
+  stat_summary(fun = mean, geom = "point", shape = 18, size = 3, position = position_dodge(width = 0.9)) +
+  labs(y = "", x = "Average score") +
+  scale_fill_manual(values = custom_colors) +
+  scale_pattern_manual(values = custom_patterns) +
+  scale_y_discrete(labels = new_labels_layperson_y_axis, limits = rev(metric_order))  +
+  scale_x_continuous(limits = c(0, 7), breaks = seq(0, 7, 1)) +  # Changed back to start at 0
+  coord_cartesian(xlim = c(0, 7)) +  # Changed back to start at 0
+  theme_pubr() +
+  theme(
+    legend.title = element_blank(),
+    axis.text.y = element_text(angle = 0, hjust = 1, size = 17, lineheight = 0.8),
+    axis.text.x = element_text(size = 17),
+    axis.title.x = element_text(size = 18),
+    legend.text = element_text(size = 17),
+    legend.position = "bottom",
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.x = element_line(color = "gray90", size = 0.5),
+    panel.grid.minor.x = element_line(color = "gray95", size = 0.25),
+    plot.margin = margin(r = 40, l = 100) # Increased left margin for wrapped labels
+  ) +
+  guides(fill = guide_legend(override.aes = list(shape = NA)))
+
+
+dev.off()
+
+```
+
+
+=======
+
+
+# Similarity
+
+```{r}
+between_similarity_df_a <- readxl::read_excel('../Data/between_subject_similarity_matrix_a.xlsx')
+between_similarity_matrix_a <- data.matrix(between_similarity_df_a)
+between_similarity_df_b <- readxl::read_excel('../Data/between_subject_similarity_matrix_b.xlsx')
+between_similarity_matrix_b <- data.matrix(between_similarity_df_b)
+```
+
+
+```{r}
+# between_similarity_matrix_a[between_similarity_matrix_a<0.9] <- 0
+# similarity_network_a <- graph_from_adjacency_matrix(between_similarity_matrix_a, weighted=T, mode="undirected", diag=F)
+# 
+# plot(similarity_network_a,
+#     # === vertex
+#     vertex.color = "#FF9800",          
+#     vertex.frame.color = "black",                 
+#     vertex.shape="circle",                       
+#     vertex.size=16,                             
+#     vertex.size2=NA,                             
+# 
+#     # === Edge
+#     edge.color="black",                           # Edge color
+#     edge.width=1,                                 # Edge width, defaults to 1
+#     edge.arrow.size=1,                            # Arrow size, defaults to 1
+#     edge.arrow.width=1,                           # Arrow width, defaults to 1
+#     edge.lty="solid",                             # Line type, could be 0 or “blank”, 1 or “solid”, 2 or “dashed”, 3 or “dotted”, 4 or “dotdash”, 5 or “longdash”, 6 or “twodash”
+#     edge.curved=0.3    ,                          # Edge curvature, range 0-1 (FALSE sets it to 0, TRUE to 0.5)
+#     )
+```
+
+```{r}
+# between_similarity_matrix_b[between_similarity_matrix_b<0.9] <- 0
+# similarity_network_b <- graph_from_adjacency_matrix(between_similarity_matrix_b, weighted=T, mode="undirected", diag=F)
+# 
+# plot(similarity_network_b,
+#     # === vertex
+#     vertex.color = "#FF9800",          
+#     vertex.frame.color = "black",                 
+#     vertex.shape="circle",                       
+#     vertex.size=16,                             
+#     vertex.size2=NA,                             
+# 
+#     # === Edge
+#     edge.color="black",
+#     edge.width=1, 
+#     edge.arrow.size=1,
+#     edge.arrow.width=1,
+#     edge.lty="solid",
+#     edge.curved=0.3,
+#     )
+```
+
+
+```{r}
+compute_average_similarity <- function(group_value, training_status_value, df, similarity_matrix) {
+  group <- df %>% filter(group == group_value & training_status == training_status_value) %>% select(journalist)
+  ids <- group$journalist
+  n <- length(ids)
+  individual_similarity_lst <- c()
+  
+  if (n < 2) return(list(average_similarity = NA, similarity_lst = individual_similarity_lst))  # Return NA and empty list if fewer than 2 journalists
+  
+  for (i in 1:n) {
+    individual_total_similarity <- 0
+    for (j in 1:n) {
+      if (j != i) {
+        individual_total_similarity <- individual_total_similarity + similarity_matrix[ids[i], ids[j]]
+      }
+    }
+    individual_similarity_lst <- c(individual_similarity_lst, individual_total_similarity / (n - 1))
+  }
+  return(list(average_similarity = mean(individual_similarity_lst), similarity_lst = individual_similarity_lst))
+}
+
+
+
+# Calculate average similarities for each group
+results_similarity_a_before <- compute_average_similarity(0, 0, expert_evaluated_completed_tasks_df, between_similarity_matrix_a)
+results_similarity_a_after <- compute_average_similarity(1, 1, expert_evaluated_completed_tasks_df, between_similarity_matrix_a)
+results_similarity_b_before <- compute_average_similarity(0, 1, expert_evaluated_completed_tasks_df, between_similarity_matrix_b)
+results_similarity_b_after <- compute_average_similarity(1, 0, expert_evaluated_completed_tasks_df, between_similarity_matrix_b)
+
+avg_similarity_a_before <- results_similarity_a_before$average_similarity
+avg_similarity_a_after <- results_similarity_a_after$average_similarity
+avg_similarity_b_before <- results_similarity_b_before$average_similarity
+avg_similarity_b_after <- results_similarity_b_after$average_similarity
+
+
+cat("avg_similarity_a_before:", avg_similarity_a_before, "\n")
+cat("avg_similarity_a_after", avg_similarity_a_after, "\n")
+cat("avg_similarity_b_before", avg_similarity_b_before, "\n")
+cat("avg_similarity_b_after", avg_similarity_b_after, "\n")
+```
+```{r}
+lst_similarity_a_before <- results_similarity_a_before$similarity_lst
+lst_similarity_a_after <- results_similarity_a_after$similarity_lst
+lst_similarity_b_before <- results_similarity_b_before$similarity_lst
+lst_similarity_b_after <- results_similarity_b_after$similarity_lst
+
+cat("lst_similarity_a_before:", lst_similarity_a_before, "\n")
+cat("lst_similarity_a_after", lst_similarity_a_after, "\n")
+cat("lst_similarity_b_before", lst_similarity_b_before, "\n")
+cat("lst_similarity_b_after", lst_similarity_b_after, "\n")
+```
+
+
+```{r}
+# For Article A
+wilcox_test_a <- wilcox.test(lst_similarity_a_before, lst_similarity_a_after, paired = FALSE)
+
+# For Article B
+wilcox_test_b <- wilcox.test(lst_similarity_b_before, lst_similarity_b_after, paired = FALSE)
+
+print(wilcox_test_a)
+print(wilcox_test_b)
+```
+
