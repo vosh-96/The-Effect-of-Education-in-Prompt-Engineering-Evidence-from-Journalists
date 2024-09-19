@@ -71,18 +71,18 @@ wrap_label <- function(label, width = 20) {
 
 ```{r}
 # read the raw expert evaluated data
-expert_evaluated_raw_data_name <- "annotated_data_240822.csv"
-expert_evaluated_raw_df <- read_csv(file.path(getwd(),"..", "Data", expert_evaluated_raw_data_name), 
+expert_evaluated_raw_data_name <- "annotated_ anonymised_data_240822.csv"
+expert_evaluated_raw_df <- read_csv(file.path(getwd(),"..", "Data", "Expert_evaluated", expert_evaluated_raw_data_name), 
                    show_col_types = FALSE)
 
 # read the raw layperson evaluated data
 layperson_evaluated_raw_data_name <- "promptEng_journalist_eval_June 5, 2024_16.40.csv"
-layperson_evaluated_raw_df  <- read_csv(file.path(getwd(),"..", "Data", layperson_evaluated_raw_data_name), 
+layperson_evaluated_raw_df  <- read_csv(file.path(getwd(),"..", "Data", "External_non_expert_evaluators", layperson_evaluated_raw_data_name), 
                    show_col_types = FALSE)
 
 
 question_mapping_data_name <- "Question_name_mapping.csv"
-question_mapping_df  <- read_csv(file.path(getwd(),"..", "Data", question_mapping_data_name), 
+question_mapping_df  <- read_csv(file.path(getwd(),"..", "Data", "External_non_expert_evaluators", question_mapping_data_name), 
                    show_col_types = FALSE)
 
 
@@ -410,46 +410,15 @@ lillie.test(expert_evaluated_completed_tasks_df[which(expert_evaluated_completed
 lillie.test(expert_evaluated_completed_tasks_df[which(expert_evaluated_completed_tasks_df$training_status==1),]$perceived_expertise)
 ```
 
-```{r}
 
-
-#pdf("perceived_expertise.pdf",width = 6, height = 4)
-
-
-boxplot_perceived_expertise <- ggwithinstats(
-  data = expert_evaluated_completed_tasks_df,
-  x = training_status, 
-  y = perceived_expertise,
-  pairwise.display = "all",
-  centrality.plotting = FALSE,
-  xlab = element_blank(),
-  ylab = "Participants' Perceived Expertise with LLM",
-  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
-  point.path = FALSE,
-  results.subtitle = TRUE,
-  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
-  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
-  ggplot.component = list(aes(fill = training_status))
-)
-
-
-boxplot_perceived_expertise +
-  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
-  scale_x_discrete(labels=c("Before Training", "After Training")) +
-  theme(
-    axis.text = element_text(size = 12),
-    axis.title = element_text(size = 12, face = "plain"),
-    axis.title.y = element_text(size = 13),
-    axis.text.x = element_text(size = 13), 
-    axis.text.y = element_text(size = 13), 
-  ) +
-  scale_y_continuous(limits = c(0, 7))
-#dev.off()
-
-```
 
 ```{r}
-pdf("perceived_expertise.pdf",width = 4, height = 4)
+# Create the directory if it doesn't exist
+dir.create(file.path(getwd(), "Figures"), recursive = TRUE, showWarnings = FALSE)
+
+# Now create the PDF in the specified directory
+pdf(file.path(getwd(), "Figures", "perceived_expertise_RQ1.pdf"), width = 4, height = 4)
+
 ggplot(expert_evaluated_completed_tasks_df, aes(x = training_status, y = perceived_expertise)) +
   geom_boxplot_pattern(
     aes(pattern = training_status),
@@ -481,46 +450,15 @@ dev.off()
 
 ## Perceived Helpfulness
 
-```{r}
-
-
-
-# pdf("percieved_helpfulness.pdf",width = 6, height = 4)
-boxplot_expert_helpfulness <- ggwithinstats(
-  data = expert_evaluated_completed_tasks_df,
-  x = training_status, 
-  y = perceived_helpfulness,
-  pairwise.display = "all",
-  centrality.plotting = FALSE,
-  xlab = element_blank(),
-  ylab = "Participants' Perceived Helpfulness with LLM",
-  centrality.point.args = list(size = 3.5, color = c("#FF9800", "#1976D2")),
-  point.path = FALSE,
-  results.subtitle = FALSE,
-  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
-  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
-  ggplot.component = list(aes(fill = training_status))
-)
-
-
-boxplot_expert_helpfulness +
-  scale_fill_manual(values = c("#FF9800", "#1976D2")) +
-  scale_x_discrete(labels=c("Before Training", "After Training")) +
-  theme(
-    axis.text = element_text(size = 12),
-    axis.title = element_text(size = 12, face = "plain"),
-    axis.title.y = element_text(size = 13),
-    axis.text.x = element_text(size = 13), 
-    axis.text.y = element_text(size = 13), 
-  ) +
-  scale_y_continuous(limits = c(0, 7))
-#dev.off()
-
-```
 
 
 ```{r}
-pdf("perceived_helpfulness.pdf",width = 4, height = 4)
+# Create the directory if it doesn't exist
+dir.create(file.path(getwd(), "Figures"), recursive = TRUE, showWarnings = FALSE)
+
+# Now create the PDF in the specified directory
+pdf(file.path(getwd(), "Figures", "perceived_helpfulness_RQ1.pdf"), width = 4, height = 4)
+
 ggplot(expert_evaluated_completed_tasks_df, aes(x = training_status, y = perceived_helpfulness)) +
   geom_boxplot_pattern(
     aes(pattern = training_status),
@@ -800,24 +738,7 @@ boxplot_expert_score_depth  +
   scale_pattern_manual(values = c("stripe", "stripe", "none", "none"))
 #dev.off()
 ```
-```{r}
-boxplot_expert_score_misrep <-  ggbetweenstats(
-  data = expert_evaluated_completed_tasks_df,
-  x = article_training_mutation,
-  y = expert_grade_representation,
-   pairwise.display = "all",
-  centrality.path = FALSE,
-  xlab = "",
-  ylab = "representation errors in posts",
-  centrality.plotting = FALSE,
-  point.path = FALSE,
-  results.subtitle = TRUE,
-#  type = "robust",
-  violin.args = list(width = 0, alpha = 0.0, na.rm = TRUE),
-  point.args = list(size = 3, alpha = 0.0, na.rm = TRUE),
-)
-boxplot_expert_score_misrep + scale_y_continuous(limits = c(0, 4))
-```
+
 
 ```{r}
 boxplot_expert_score_overall_Expert2 <- ggbetweenstats(
@@ -857,7 +778,7 @@ boxplot_expert_score_overall_Expert2 +
 ```
 
 ```{r}
-metrics_expert_list <- c("expert_grade_factual", "expert_grade_representation", "expert_grade_reward")
+
 metrics_expert_list <- c("expert_grade_factual", "expert_grade_representation", "expert_grade_depth")
 
 
@@ -892,7 +813,13 @@ final_metrics_stat_expert_list
 ```
 
 ```{r}
-pdf("RQ3_layperson.pdf",width = 6, height = 6)
+# Create the directory if it doesn't exist
+dir.create(file.path(getwd(), "Figures"), recursive = TRUE, showWarnings = FALSE)
+
+# Now create the PDF in the specified directory
+pdf(file.path(getwd(), "Figures", "expert_score_detailed_RQ2.pdf"), width = 10, height = 6)
+
+
 # Custom color palette
 custom_colors <- c("Article Psy, Before training" = "#E69F00", 
                    "Article Psy, After training" = "#E69F00", 
@@ -945,7 +872,7 @@ ggplot(final_metrics_stat_expert_list ,
 dev.off()
 ```
 ```{r}
-result <- expert_evaluated_completed_tasks_df %>% 
+result_expert_score_overall <- expert_evaluated_completed_tasks_df %>% 
     group_by(article_training_mutation) %>% 
     summarise(
       mean_val = mean(expert_grade_overall_Expert2, na.rm = TRUE),
@@ -961,11 +888,18 @@ result <- expert_evaluated_completed_tasks_df %>%
       metrics = "expert_grade_overall_Expert2",
     ) %>%
     select(article_training_mutation, metrics, mean_val, lower_ci, upper_ci, lower_se, upper_se)
-result
+result_expert_score_overall
 
 ```
 ```{r}
-pdf("expert_score_overall.pdf",width = 10, height = 4)
+
+# Create the directory if it doesn't exist
+dir.create(file.path(getwd(), "Figures"), recursive = TRUE, showWarnings = FALSE)
+
+# Now create the PDF in the specified directory
+pdf(file.path(getwd(), "Figures", "expert_score_overall_RQ2.pdf"), width = 10, height = 4)
+
+
 ggplot(result , 
        aes(x = metrics, y = mean_val, 
            fill = article_training_mutation, 
@@ -1990,13 +1924,13 @@ Intention_reshare_layperson_tot
 ```{r}
 # Assuming layperson_evaluated_processed_data is your input dataframe
 
-metrics_list <- c("Readability", "Clarity", "Informativeness", "Engagement", 
+metrics_external_non_expert_list <- c("Readability", "Clarity", "Informativeness", "Engagement", 
              "Style_appropriateness", "Language_appropriateness", "Depth",
              "Perceived_trustworthiness", "Intention_reshare", "Intention_seek_info")
 
 metrics_stat_list <- list()
 
-for (metric in metrics_list) {
+for (metric in metrics_external_non_expert_list) {
   result <- layperson_evaluated_processed_data %>% 
     group_by(article_training_mutation) %>% 
     summarise(
@@ -2038,8 +1972,11 @@ final_metrics_stat_list
 
 
 ```{r}
+# Create the directory if it doesn't exist
+dir.create(file.path(getwd(), "Figures"), recursive = TRUE, showWarnings = FALSE)
 
-pdf("RQ3_layperson.pdf",width = 18, height = 10)
+# Now create the PDF in the specified directory
+pdf(file.path(getwd(), "Figures", "external_non_expert_eval_RQ3.pdf"), width = 18, height = 10)
 
       
 new_labels_layperson_y_axis <- c(
@@ -2114,9 +2051,9 @@ dev.off()
 # Similarity
 
 ```{r}
-between_similarity_df_a <- readxl::read_excel('../Data/between_subject_similarity_matrix_a.xlsx')
+between_similarity_df_a <- readxl::read_excel(file.path(getwd(),"..", "Data", "Post_similarity","between_subject_similarity_matrix_a.xlsx"))
 between_similarity_matrix_a <- data.matrix(between_similarity_df_a)
-between_similarity_df_b <- readxl::read_excel('../Data/between_subject_similarity_matrix_b.xlsx')
+between_similarity_df_b <- readxl::read_excel(file.path(getwd(),"..", "Data", "Post_similarity","between_subject_similarity_matrix_b.xlsx"))
 between_similarity_matrix_b <- data.matrix(between_similarity_df_b)
 ```
 
